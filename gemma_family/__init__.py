@@ -1,1 +1,0 @@
-"""MedGemma evaluation package."""
