@@ -1,0 +1,384 @@
+"""
+Perturbation-based faithfulness evaluation.
+
+For every generated token the corresponding saliency heatmap is used to
+identify the most influential image regions.  Those regions are zeroed
+out, the modified image is passed through the model again (teacher-
+forcing), and the drop in the target token's probability is measured.
+
+Two modes are supported:
+
+* **per-token** (``mode="per_token"``):  each token gets its own masked
+  image ⟹ one forward pass per token × mask-ratio.  Faithful to the
+  thesis description but slow.
+* **average** (``mode="average"``):  a single mask derived from the
+  mean saliency across all tokens ⟹ one forward pass per mask-ratio.
+  Fast approximation for quick iterations.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+from .config import Config
+from .model_utils import build_tf_inputs, get_token_probabilities
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Masking helpers
+# ──────────────────────────────────────────────────────────────────────────
+def mask_pixel_values(
+    pixel_values: torch.Tensor,
+    saliency_map: np.ndarray,
+    mask_ratio: float,
+    grid_size: int = 16,
+) -> torch.Tensor:
+    """Zero-out the top-*mask_ratio* fraction of image regions.
+
+    Parameters
+    ----------
+    pixel_values : [1, 3, H, W]
+    saliency_map : (grid_size, grid_size) in [0, 1]
+    mask_ratio   : fraction of grid cells to mask, e.g. 0.3
+    grid_size    : must match *saliency_map* shape
+
+    Returns
+    -------
+    masked : [1, 3, H, W] – a cloned tensor with masked regions set to 0.
+    """
+    H, W = pixel_values.shape[2], pixel_values.shape[3]
+
+    flat = saliency_map.flatten()
+    n_mask = max(1, int(mask_ratio * len(flat)))
+    top_indices = np.argsort(flat)[-n_mask:]
+
+    # grid-resolution binary mask
+    grid_mask_np = np.zeros(grid_size * grid_size, dtype=np.float32)
+    grid_mask_np[top_indices] = 1.0
+    grid_mask_np = grid_mask_np.reshape(1, 1, grid_size, grid_size)
+
+    # up-sample to pixel resolution (nearest-neighbour keeps hard edges)
+    grid_mask_t = torch.from_numpy(grid_mask_np).to(pixel_values.device)
+    pixel_mask = F.interpolate(grid_mask_t, size=(H, W), mode="nearest")
+    # pixel_mask: [1, 1, H, W]  values in {0, 1}
+
+    masked = pixel_values.clone()
+    masked = masked * (1.0 - pixel_mask)
+    return masked
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Average-saliency (fast) evaluation
+# ──────────────────────────────────────────────────────────────────────────
+def evaluate_faithfulness_average(
+    model,
+    inputs: dict,
+    generated_ids: torch.Tensor,
+    input_len: int,
+    saliency_maps: dict[int, np.ndarray],
+    original_probs: torch.Tensor,
+    cfg: Config,
+) -> dict:
+    """Perturbation using the *mean* saliency map.  Very fast."""
+
+    grid = cfg.image_token_grid
+    all_maps = np.stack(list(saliency_maps.values()), axis=0)  # [N, g, g]
+    avg_map = all_maps.mean(axis=0)                             # [g, g]
+    # re-normalise
+    lo, hi = avg_map.min(), avg_map.max()
+    if hi - lo > 1e-9:
+        avg_map = (avg_map - lo) / (hi - lo)
+
+    total_len = generated_ids.shape[1]
+    num_gen = total_len - input_len
+
+    # Only evaluate tokens that belong to this saliency-map set
+    var_positions = sorted(saliency_maps.keys())
+
+    rows: list[dict] = []
+
+    for mask_ratio in tqdm(cfg.mask_ratios, desc="  avg-perturb", leave=False):
+        masked_pv = mask_pixel_values(
+            inputs["pixel_values"], avg_map, mask_ratio, grid
+        )
+        tf = build_tf_inputs(inputs, generated_ids, input_len,
+                             pixel_values_override=masked_pv)
+        masked_probs = get_token_probabilities(model, tf, generated_ids, input_len)
+
+        for pos in var_positions:
+            tok_idx = pos - input_len
+            rows.append({
+                "position": pos,
+                "token_id": generated_ids[0, pos].item(),
+                "mask_ratio": mask_ratio,
+                "original_prob": original_probs[tok_idx].item(),
+                "masked_prob": masked_probs[tok_idx].item(),
+                "prob_drop": original_probs[tok_idx].item() - masked_probs[tok_idx].item(),
+            })
+
+    return _aggregate(rows, cfg)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-token (detailed) evaluation
+# ──────────────────────────────────────────────────────────────────────────
+def evaluate_faithfulness_per_token(
+    model,
+    inputs: dict,
+    generated_ids: torch.Tensor,
+    input_len: int,
+    saliency_maps: dict[int, np.ndarray],
+    original_probs: torch.Tensor,
+    cfg: Config,
+    content_mask: list[bool] | None = None,
+) -> dict:
+    """Per-token perturbation (one masked image per token).
+
+    If *content_mask* is given, only tokens where the mask is ``True``
+    are evaluated, which dramatically reduces runtime.
+    """
+    total_len = generated_ids.shape[1]
+    grid = cfg.image_token_grid
+    rows: list[dict] = []
+
+    positions = list(range(input_len, total_len))
+    if content_mask is not None:
+        positions = [
+            p for p, keep in zip(positions, content_mask) if keep
+        ]
+
+    for mask_ratio in cfg.mask_ratios:
+        for pos in tqdm(
+            positions,
+            desc=f"  tok-perturb {mask_ratio:.0%}",
+            leave=False,
+        ):
+            if pos not in saliency_maps:
+                continue
+
+            tok_idx = pos - input_len
+            sal = saliency_maps[pos]
+
+            masked_pv = mask_pixel_values(
+                inputs["pixel_values"], sal, mask_ratio, grid
+            )
+            tf = build_tf_inputs(
+                inputs, generated_ids, input_len,
+                pixel_values_override=masked_pv,
+            )
+            masked_probs = get_token_probabilities(
+                model, tf, generated_ids, input_len
+            )
+
+            rows.append({
+                "position": pos,
+                "token_id": generated_ids[0, pos].item(),
+                "mask_ratio": mask_ratio,
+                "original_prob": original_probs[tok_idx].item(),
+                "masked_prob": masked_probs[tok_idx].item(),
+                "prob_drop": original_probs[tok_idx].item() - masked_probs[tok_idx].item(),
+            })
+
+    return _aggregate(rows, cfg)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Random baseline evaluation
+# ──────────────────────────────────────────────────────────────────────────
+def evaluate_faithfulness_random(
+    model,
+    inputs: dict,
+    generated_ids: torch.Tensor,
+    input_len: int,
+    original_probs: torch.Tensor,
+    cfg: Config,
+    seed: int = 42,
+) -> dict:
+    """Perturbation with a *random* saliency map (sanity baseline)."""
+    rng = np.random.RandomState(seed)
+    grid = cfg.image_token_grid
+    total_len = generated_ids.shape[1]
+    num_gen = total_len - input_len
+
+    rows: list[dict] = []
+    for mask_ratio in tqdm(cfg.mask_ratios, desc="  rand-perturb", leave=False):
+        rand_map = rng.rand(grid, grid).astype(np.float32)
+        masked_pv = mask_pixel_values(
+            inputs["pixel_values"], rand_map, mask_ratio, grid,
+        )
+        tf = build_tf_inputs(inputs, generated_ids, input_len,
+                             pixel_values_override=masked_pv)
+        masked_probs = get_token_probabilities(model, tf, generated_ids, input_len)
+
+        for tok_idx in range(num_gen):
+            pos = input_len + tok_idx
+            rows.append({
+                "position": pos,
+                "token_id": generated_ids[0, pos].item(),
+                "mask_ratio": mask_ratio,
+                "original_prob": original_probs[tok_idx].item(),
+                "masked_prob": masked_probs[tok_idx].item(),
+                "prob_drop": original_probs[tok_idx].item() - masked_probs[tok_idx].item(),
+            })
+
+    return _aggregate(rows, cfg)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Shared aggregation
+# ──────────────────────────────────────────────────────────────────────────
+def _aggregate(rows: list[dict], cfg: Config) -> dict:
+    if not rows:
+        return {"per_token": [], "aopc": 0.0, "mean_drops_by_ratio": {}}
+
+    mean_by_ratio: dict[float, float] = {}
+    for mr in cfg.mask_ratios:
+        drops = [r["prob_drop"] for r in rows if r["mask_ratio"] == mr]
+        if drops:
+            mean_by_ratio[mr] = float(np.mean(drops))
+
+    aopc = float(np.mean(list(mean_by_ratio.values()))) if mean_by_ratio else 0.0
+
+    return {
+        "per_token": rows,
+        "aopc": aopc,
+        "mean_drops_by_ratio": mean_by_ratio,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Insertion experiment
+# ──────────────────────────────────────────────────────────────────────────
+def _reveal_pixel_values(
+    pixel_values: torch.Tensor,
+    saliency_map: np.ndarray,
+    reveal_ratio: float,
+    grid_size: int = 16,
+) -> torch.Tensor:
+    """Reveal the top-*reveal_ratio* fraction of patches; zero out the rest.
+
+    This is the complement of ``mask_pixel_values``: instead of removing the
+    most salient regions, only those regions are kept visible.
+
+    Parameters
+    ----------
+    pixel_values : [1, 3, H, W]
+    saliency_map : (grid_size, grid_size) in [0, 1]
+    reveal_ratio : fraction of grid cells to reveal, e.g. 0.3
+    grid_size    : must match *saliency_map* shape
+
+    Returns
+    -------
+    revealed : [1, 3, H, W] – a cloned tensor where only the top-k patches
+        are non-zero; all other pixels are zeroed.
+    """
+    H, W = pixel_values.shape[2], pixel_values.shape[3]
+
+    flat = saliency_map.flatten()
+    n_reveal = max(1, int(reveal_ratio * len(flat)))
+    top_indices = np.argsort(flat)[-n_reveal:]
+
+    # 1 = revealed, 0 = masked
+    grid_reveal_np = np.zeros(grid_size * grid_size, dtype=np.float32)
+    grid_reveal_np[top_indices] = 1.0
+    grid_reveal_np = grid_reveal_np.reshape(1, 1, grid_size, grid_size)
+
+    grid_reveal_t = torch.from_numpy(grid_reveal_np).to(pixel_values.device)
+    pixel_reveal = F.interpolate(grid_reveal_t, size=(H, W), mode="nearest")
+
+    revealed = pixel_values.clone()
+    revealed = revealed * pixel_reveal
+    return revealed
+
+
+def evaluate_insertion_per_token(
+    model,
+    inputs: dict,
+    generated_ids: torch.Tensor,
+    input_len: int,
+    saliency_maps: dict[int, np.ndarray],
+    cfg: Config,
+    content_mask: list[bool] | None = None,
+) -> dict:
+    """Insertion-based faithfulness evaluation (per token).
+
+    For each generated token and each reveal ratio, only the top-k most
+    salient patches are shown (the rest are zeroed). The probability of the
+    target token is measured relative to an all-black baseline image.
+
+    Fields in each per-token row mirror the deletion output:
+    - ``baseline_prob``  : prob with a fully-zeroed image
+    - ``revealed_prob``  : prob with the top-k patches revealed
+    - ``prob_rise``      : ``revealed_prob - baseline_prob``
+    - ``reveal_ratio``   : fraction of patches revealed (mirrors ``mask_ratio``)
+
+    A higher ``prob_rise`` / AOPC means the method correctly identifies the
+    most informative patches.
+    """
+    total_len = generated_ids.shape[1]
+    grid = cfg.image_token_grid
+
+    positions = list(range(input_len, total_len))
+    if content_mask is not None:
+        positions = [p for p, keep in zip(positions, content_mask) if keep]
+
+    pv = inputs["pixel_values"]
+
+    # ── all-black baseline (computed once per sample) ──────────────────
+    blank_pv = torch.zeros_like(pv)
+    tf_blank = build_tf_inputs(inputs, generated_ids, input_len,
+                               pixel_values_override=blank_pv)
+    with torch.no_grad():
+        baseline_probs = get_token_probabilities(model, tf_blank, generated_ids, input_len)
+
+    rows: list[dict] = []
+
+    for reveal_ratio in cfg.mask_ratios:
+        for pos in tqdm(
+            positions,
+            desc=f"  ins-perturb {reveal_ratio:.0%}",
+            leave=False,
+        ):
+            if pos not in saliency_maps:
+                continue
+
+            tok_idx = pos - input_len
+            sal = saliency_maps[pos]
+
+            revealed_pv = _reveal_pixel_values(pv, sal, reveal_ratio, grid)
+            tf = build_tf_inputs(inputs, generated_ids, input_len,
+                                 pixel_values_override=revealed_pv)
+            revealed_probs = get_token_probabilities(model, tf, generated_ids, input_len)
+
+            rows.append({
+                "position":      pos,
+                "token_id":      generated_ids[0, pos].item(),
+                "reveal_ratio":  reveal_ratio,
+                "baseline_prob": baseline_probs[tok_idx].item(),
+                "revealed_prob": revealed_probs[tok_idx].item(),
+                "prob_rise":     revealed_probs[tok_idx].item() - baseline_probs[tok_idx].item(),
+            })
+
+    return _aggregate_insertion(rows, cfg)
+
+
+def _aggregate_insertion(rows: list[dict], cfg: Config) -> dict:
+    if not rows:
+        return {"per_token": [], "aopc_ins": 0.0, "mean_rises_by_ratio": {}}
+
+    mean_by_ratio: dict[float, float] = {}
+    for mr in cfg.mask_ratios:
+        rises = [r["prob_rise"] for r in rows if r["reveal_ratio"] == mr]
+        if rises:
+            mean_by_ratio[mr] = float(np.mean(rises))
+
+    aopc_ins = float(np.mean(list(mean_by_ratio.values()))) if mean_by_ratio else 0.0
+
+    return {
+        "per_token":          rows,
+        "aopc_ins":           aopc_ins,
+        "mean_rises_by_ratio": mean_by_ratio,
+    }

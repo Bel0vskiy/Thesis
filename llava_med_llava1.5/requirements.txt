@@ -1,0 +1,11 @@
+torch>=2.0
+transformers>=4.40
+bitsandbytes>=0.41
+accelerate>=0.25
+datasets
+Pillow
+matplotlib
+numpy
+pandas
+tqdm
+scipy
