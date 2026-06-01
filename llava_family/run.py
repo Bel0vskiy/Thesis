@@ -3,13 +3,15 @@
 Main pipeline for: *Evaluating Explainability Methods for Medical
 Vision-Language Models via Perturbation-Based Faithfulness Testing*.
 
+LLaVA-Med variant.
+
 Usage examples
 --------------
 # Quick smoke test (2 samples, attention only, average perturbation):
   python run.py --num-samples 2 --methods attention --eval-mode average
 
-# Full experiment (50 samples, both methods, per-token perturbation):
-  python run.py --num-samples 50 --methods attention gradcam \
+# Full experiment (50 samples, all methods, per-token perturbation):
+    python run.py --num-samples 50 --methods attention gradcam gmar_l1 gmar_l2 \
                 --eval-mode per_token
 
 # Using a local image folder instead of HuggingFace dataset:
@@ -46,7 +48,6 @@ from model_utils import (
     build_tf_inputs,
     move_inputs_to_device,
 )
-from ner_filter import build_variants
 from saliency import get_saliency_fn
 from evaluation import (
     evaluate_faithfulness_average,
@@ -66,7 +67,7 @@ from visualization import (
 # ──────────────────────────────────────────────────────────────────────────
 def parse_args() -> Config:
     ap = argparse.ArgumentParser(
-        description="VLM Explainability – perturbation-based evaluation"
+        description="VLM Explainability – perturbation-based evaluation (LLaVA-Med)"
     )
     ap.add_argument("--model", default=Config.model_id,
                     help="HuggingFace model id")
@@ -137,10 +138,8 @@ def process_sample(
     content_only: bool,
     out_dir: Path,
 ) -> dict:
-    """Run saliency extraction + perturbation evaluation on one sample.
+    """Run saliency extraction + perturbation evaluation on one sample."""
 
-    Returns a dict with all per-method results and metadata.
-    """
     image = sample["image"]
     ref_caption = sample.get("caption", "")
     sample_id = sample.get("id", str(sample_idx))
@@ -164,7 +163,7 @@ def process_sample(
         return {}
 
     # ── 2. Image-token positions ─────────────────────────────────────────
-    img_positions = get_image_token_positions(inputs)
+    img_positions = get_image_token_positions(inputs, cfg.image_token_index)
     print(f"  Image tokens: {len(img_positions)}")
 
     # ── 3. Build teacher-forcing inputs ──────────────────────────────────
@@ -184,10 +183,7 @@ def process_sample(
     n_content = sum(content_mask)
     print(f"  Content tokens: {n_content}/{num_gen}")
 
-    # ── 5b. NER variants ─────────────────────────────────────────────────
-    variants = build_variants(gen_text, gen_ids, input_len, tok, cfg)
-
-    # ── 6. Saliency + evaluation per method, per variant ─────────────────
+    # ── 6. Saliency + evaluation per method ─────────────────────────────
     sample_dir = out_dir / f"sample_{sample_idx:04d}"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,44 +208,28 @@ def process_sample(
         print(f"  Saliency computed in {dt:.1f}s  ({len(sal_maps)} maps)")
         all_saliency[method] = sal_maps
 
-        # ── Evaluate each NER variant ────────────────────────────────────
-        for var_name, var_info in variants.items():
-            var_positions = var_info["token_positions"]
-            # Build a content mask scoped to this variant's positions
-            var_content_mask = [
-                (content_mask[pos - input_len] if content_only else True)
-                and (pos in var_positions)
-                for pos in range(input_len, total_len)
-            ]
-            # Filter saliency maps to only variant positions
-            var_sal_maps = {
-                pos: sal for pos, sal in sal_maps.items()
-                if pos in var_positions
-            }
-            if not var_sal_maps:
-                continue
+        eval_content_mask = [
+            (content_mask[pos - input_len] if content_only else True)
+            for pos in range(input_len, total_len)
+        ]
 
-            suffix = f"_{var_name}" if var_name != "original" else ""
-            result_key = f"{method}{suffix}"
-
-            t0 = time.time()
-            if eval_mode == "average":
-                ev = evaluate_faithfulness_average(
-                    model, inputs, gen_ids, input_len,
-                    var_sal_maps, orig_probs, cfg,
-                )
-            else:
-                ev = evaluate_faithfulness_per_token(
-                    model, inputs, gen_ids, input_len,
-                    var_sal_maps, orig_probs, cfg,
-                    content_mask=var_content_mask,
-                )
-            dt = time.time() - t0
-            print(f"  [{var_name}] Perturbation eval in {dt:.1f}s   "
-                  f"AOPC = {ev['aopc']:.4f}")
-            for mr, drop in ev["mean_drops_by_ratio"].items():
-                print(f"    mask {mr:.0%}: Δp = {drop:+.4f}")
-            method_eval_results[result_key] = ev
+        t0 = time.time()
+        if eval_mode == "average":
+            ev = evaluate_faithfulness_average(
+                model, inputs, gen_ids, input_len,
+                sal_maps, orig_probs, cfg,
+            )
+        else:
+            ev = evaluate_faithfulness_per_token(
+                model, inputs, gen_ids, input_len,
+                sal_maps, orig_probs, cfg,
+                content_mask=eval_content_mask,
+            )
+        dt = time.time() - t0
+        print(f"  Perturbation eval in {dt:.1f}s   AOPC = {ev['aopc']:.4f}")
+        for mr, drop in ev["mean_drops_by_ratio"].items():
+            print(f"    mask {mr:.0%}: Δp = {drop:+.4f}")
+        method_eval_results[method] = ev
 
         # Visualisations (full saliency, not per-variant)
         if cfg.save_visualizations:
@@ -262,8 +242,11 @@ def process_sample(
     # ── 7. Random baseline ───────────────────────────────────────────────
     print("\n  ── random baseline ──")
     t0 = time.time()
+    random_positions = list(range(input_len, total_len))
     random_eval_result = evaluate_faithfulness_random(
         model, inputs, gen_ids, input_len, orig_probs, cfg,
+        content_mask=content_mask if content_only else None,
+        token_positions=random_positions,
     )
     dt = time.time() - t0
     print(f"  Random eval in {dt:.1f}s   AOPC = {random_eval_result['aopc']:.4f}")
@@ -300,7 +283,6 @@ def process_sample(
         "reference_caption": ref_caption,
         "num_generated_tokens": num_gen,
         "num_content_tokens": n_content,
-        "ner_variants": {k: v["text"] for k, v in variants.items()},
         "eval": {m: {
             "aopc": r["aopc"],
             "mean_drops_by_ratio": r["mean_drops_by_ratio"],
@@ -328,7 +310,6 @@ def main():
 
     # ── process each sample ──────────────────────────────────────────────
     all_sample_results: list[dict] = []
-    # {method_variant: [sample_result_eval_dict, ...]}
     all_eval_by_method: dict[str, list[dict]] = {}
 
     t_total = time.time()

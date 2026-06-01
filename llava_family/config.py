@@ -63,16 +63,6 @@ class Config:
     output_dir: str = "results"
     save_visualizations: bool = True
 
-    # ── NER-based output filtering ───────────────────────────────────────
-    ner_model: str = "Clinical-AI-Apollo/Medical-NER"
-    ner_entity_groups: List[str] = field(
-        default_factory=lambda: [
-            "DISEASE_DISORDER", "SIGN_SYMPTOM", "MEDICATION",
-            "BIOLOGICAL_STRUCTURE", "AGE", "SEX",
-        ]
-    )
-    use_ner_filter: bool = True
-
     # ── Architecture constants (LLaVA 1.5) ──────────────────────────────
     image_token_grid: int = 24              # 24×24 = 576 image tokens
     vision_patches_per_side: int = 24
