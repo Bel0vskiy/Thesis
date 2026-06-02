@@ -31,6 +31,14 @@ The saliency methods live in the `saliency/` subdirectory of each model family a
 - **`gmar_l1`** — Gradient-Weighted Attention Rollout with L1 head weighting. Computes attention rollout but weights each head by the L1 norm of its gradient before aggregation. Shared intermediate computation with `gmar_l2` is cached to avoid redundant forward passes.
 - **`gmar_l2`** — Same as `gmar_l1` but uses the L2/RMS norm for head weighting. Generally produces slightly smoother maps than the L1 variant.
 
+## Datasets
+
+Two datasets are used in this experiment, toggled via the `USE_COCO` flag in the config cell below.
+
+- **ROCOv2-radiology** (`eltorio/ROCOv2-radiology`, `train` split) — the primary dataset. Contains radiology images paired with expert-written captions sourced from biomedical literature. This is the medically relevant evaluation: the model is prompted to produce a radiology caption and the faithfulness of its saliency maps is measured against that output.
+
+- **COCO-Caption** (`lmms-lab/COCO-Caption`, `val` split) — a general-domain reference dataset of natural images with crowd-sourced captions. Included to allow comparison of faithfulness scores between medical and non-medical visual content.
+
 ### Other Files
 
 Each directory contains the same supporting modules:
