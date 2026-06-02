@@ -33,7 +33,7 @@ The saliency methods live in the `saliency/` subdirectory of each model family a
 
 ## Datasets
 
-Two datasets are used in this experiment, toggled via the `USE_COCO` flag in the config cell below.
+Two datasets are used in this experiment, toggled via the `USE_COCO` flag in the config cell of the notebooks.
 
 - **ROCOv2-radiology** (`eltorio/ROCOv2-radiology`, `train` split) — the primary dataset. Contains radiology images paired with expert-written captions sourced from biomedical literature. This is the medically relevant evaluation: the model is prompted to produce a radiology caption and the faithfulness of its saliency maps is measured against that output.
 
