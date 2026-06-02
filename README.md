@@ -1,0 +1,1 @@
+![header](https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&text=Evaluating%20The%20Faithfulness%20of%20Medical%20VLMs&fontSize=25&animation=fadeIn)
