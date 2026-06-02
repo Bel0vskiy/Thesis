@@ -38,24 +38,17 @@ class Config:
         "Write a single-sentence radiology caption for this medical image." 
         
     )
-    #"Write a single-sentence radiology caption for this medical "
-    # "image. "
     # ── Saliency methods ─────────────────────────────────────────────────
     methods: List[str] = field(
         default_factory=lambda: ["attention", "gradcam", "gmar_l1", "gmar_l2"]
     )
 
-    # LLaVA-Med-only saliency postprocess controls.
-    # Keep sink suppression OFF by default because it is method-agnostic and
-    # can collapse inter-method ranking (attention/GMAR/Grad-CAM) when the
-    # model already has low spatial contrast.
+    # LLaVA-Med saliency postprocess controls.
     enable_sink_suppression: bool = False
     sink_consistency_threshold: float = 0.75
     sink_floor_percentile: float = 10.0
 
     attention_layer_strategy: str = "global"
-    # Literature-faithful rollout keeps generated-token inheritance enabled.
-    # Set True only for diagnostic runs that suppress generated-token chains.
     rollout_block_generated_tokens: bool = False
     mask_ratios: List[float] = field(
         default_factory=lambda: [0.1, 0.2, 0.3, 0.5, 0.7, 0.9]
