@@ -1,6 +1,27 @@
 """
 Model loading, inference helpers, and shared tensor-building utilities
 for MedGemma / Gemma-3 vision-language models.
+
+Public API
+----------
+load_model_and_processor(cfg)
+    Load a model and processor from the configured checkpoint.
+
+prepare_inputs(processor, image, prompt_text)
+    Build the raw input dict from an image and a prompt string via the
+    chat template.
+
+generate_caption(model, processor, image, cfg)
+    Generate a caption and return the full token sequence, decoded text,
+    prompt length, and the original inputs dict.
+
+get_token_probabilities(model, tf_inputs, generated_ids, input_len)
+    Teacher-forcing forward pass; returns per-generated-token
+    probabilities.
+
+build_tf_inputs(inputs, generated_ids, input_len, pixel_values_override)
+    Construct the input dict for a teacher-forcing pass, optionally
+    substituting a masked image tensor.
 """
 
 from __future__ import annotations
@@ -107,10 +128,11 @@ def build_tf_inputs(
 ) -> dict:
     """Construct a teacher-forcing input dict.
 
-    ``generated_ids`` is the *full* sequence ``[prompt … generated]``.
+    ``generated_ids`` is the full sequence ``[prompt … generated]``.
     ``inputs`` must contain ``pixel_values`` and optionally
     ``token_type_ids`` from the original call to :func:`prepare_inputs`.
-    ``pixel_values_override`` lets the caller substitute a masked image.
+    Pass ``pixel_values_override`` to substitute a masked image for
+    perturbation-based evaluation.
     """
     total_len = generated_ids.shape[1]
     device = generated_ids.device
@@ -146,12 +168,12 @@ def generate_caption(
 ):
     """Generate a caption for *image*.
 
-    Returns ``(generated_ids, generated_text, input_len, inputs)``.
+    Returns a four-tuple ``(generated_ids, generated_text, input_len, inputs)``:
 
-    * ``generated_ids``  – ``[1, total_len]`` including the prompt.
-    * ``generated_text`` – decoded string of the *new* tokens only.
+    * ``generated_ids``  – ``[1, total_len]`` tensor including the prompt.
+    * ``generated_text`` – decoded string of the generated tokens only.
     * ``input_len``      – number of prompt tokens.
-    * ``inputs``         – the original processor output (on device).
+    * ``inputs``         – the original processor output, moved to device.
     """
     inputs, _ = prepare_inputs(processor, image, cfg.prompt)
     inputs = move_inputs_to_device(model, inputs)
@@ -173,12 +195,10 @@ def generate_caption(
             eos_token_id=eos_id,
         )
 
-    # Truncate at the first non-content token after the prompt so
-    # downstream saliency methods only process real generated text.
-    # We stop at: EOS, PAD, official special tokens, AND any token
-    # that decodes to empty after skip_special_tokens (e.g. Gemma's
-    # <start_of_turn>=106, <end_of_turn>=107 which the tokenizer
-    # doesn't list in all_special_ids).
+    # Truncate at the first non-content token after the prompt.
+    # Stops at EOS, PAD, tokens in all_special_ids, and any token that
+    # decodes to an empty string after skip_special_tokens — which catches
+    # model-specific control tokens not listed in all_special_ids.
     new_tokens = gen_ids[0, input_len:]
     stop_ids = {eos_id, pad_id} | set(getattr(tok, "all_special_ids", []))
     stop_ids.discard(None)

@@ -2,7 +2,7 @@
 
 Usage::
 
-    from medgemma.saliency import get_saliency_fn
+    from gemma_family.saliency import get_saliency_fn
     compute = get_saliency_fn("attention")   # or "gradcam"
     maps = compute(model, tf_inputs, generated_ids, input_len,
                    image_token_positions, cfg)

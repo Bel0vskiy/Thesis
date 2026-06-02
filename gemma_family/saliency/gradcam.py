@@ -1,17 +1,16 @@
 """
-Grad-CAM saliency for MedGemma vision-language models.
+Grad-CAM saliency for Gemma-family vision-language models.
 
 Hooks into the multi-modal projector to capture the image embeddings fed
-to the language model. For every generated token, a backward pass computes
-the gradient of that token's logit w.r.t. projector outputs.
+to the language model.  For every generated token a backward pass computes
+the gradient of that token's logit w.r.t. the projector output, and
+position-sensitive Grad-CAM is applied:
 
-For MedGemma, the projector is position-wise (no spatial mixing), so we
-use position-sensitive attribution:
+    L_i = ReLU(Σ_c  ∂y/∂A_{i,c} · A_{i,c})
 
-    L_i = ReLU(Σ_c (∂y / ∂A_{i,c}) · A_{i,c})
-
-This preserves per-image-token signal that can be washed out by classical
-channel-pooled Grad-CAM.
+The result is a grid × grid saliency map (one value per image token).
+The position-sensitive formulation preserves per-token spatial signal
+that channel-pooled Grad-CAM can wash out for position-wise projectors.
 """
 
 from __future__ import annotations
