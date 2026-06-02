@@ -21,3 +21,4 @@ mgma_ins2
 final/
 .venv
 temp
+.gitignore

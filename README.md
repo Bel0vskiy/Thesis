@@ -26,11 +26,6 @@ Both `deletion_llava_med.ipynb` and `deletion_medgemma.ipynb` are designed to ru
 
 The saliency methods live in the `saliency/` subdirectory of each model family and are initialised as a Python module. All four methods receive the same inputs — the model, the token-forced inputs, the generated token ids, the input length, the image token positions, and the config — and return a per-token saliency heatmap of shape `(grid_size, grid_size)`.
 
-- **`attention`** — Attention rollout. Recursively multiplies attention weight matrices from the vision encoder through all transformer layers, then averages across heads. Produces a smooth spatial map but tends to be spatially diffuse.
-- **`gradcam`** — Grad-CAM adapted for VLMs. Hooks the `multi_modal_projector` module to extract position-wise activations and their gradients with respect to each generated token's log-probability. Sums grad×activation over channels at each spatial position. Produces sharper, more localised maps than attention rollout.
-- **`gmar_l1`** — Gradient-Weighted Attention Rollout with L1 head weighting. Computes attention rollout but weights each head by the L1 norm of its gradient before aggregation. Shared intermediate computation with `gmar_l2` is cached to avoid redundant forward passes.
-- **`gmar_l2`** — Same as `gmar_l1` but uses the L2/RMS norm for head weighting. Generally produces slightly smoother maps than the L1 variant.
-
 ## Datasets
 
 Two datasets are used in this experiment, toggled via the `USE_COCO` flag in the config cell of the notebooks.
