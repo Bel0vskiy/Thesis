@@ -406,7 +406,6 @@ def _prepare_generate_inputs(model, inputs: dict) -> dict:
     # Injecting an extra token here corrupts the prompt with a spurious <unk> (ID=0).
     if "input_ids" in out and torch.is_tensor(out["input_ids"]):
         if bool((out["input_ids"] < 0).any().item()):
-            print(f"[DEBUG:_prepare_generate_inputs] negative placeholder already in input_ids → skipping injection")
             return out
 
     vocab_size = None
@@ -596,17 +595,6 @@ def generate_caption(
     inputs, _ = prepare_inputs(processor, image, cfg.prompt, model=model)
     inputs = move_inputs_to_device(model, inputs)
 
-    print(f"[DEBUG:generate_caption] inputs keys after prepare_inputs: {sorted(inputs.keys())}")
-    if "input_ids" in inputs and torch.is_tensor(inputs["input_ids"]):
-        iids = inputs["input_ids"]
-        print(f"[DEBUG:generate_caption] input_ids shape={tuple(iids.shape)}, dtype={iids.dtype}")
-        print(f"[DEBUG:generate_caption] input_ids values={iids[0].tolist()}")
-        n_img_tok = int((iids == -200).sum().item())
-        print(f"[DEBUG:generate_caption] -200 tokens in input_ids: {n_img_tok}")
-    for vk in ("pixel_values", "images", "image_patches"):
-        if vk in inputs and torch.is_tensor(inputs[vk]):
-            print(f"[DEBUG:generate_caption] vision tensor key='{vk}' shape={tuple(inputs[vk].shape)} dtype={inputs[vk].dtype}")
-
     # Fail early with a clear message if no image tensor is present.
     try:
         _ = get_vision_input_key(inputs)
@@ -627,21 +615,14 @@ def generate_caption(
     # Keep the adapter image tensor before normalization because
     # _prepare_generate_inputs may rewrite/remove alias keys.
     adapter_images = inputs.get("images", None)
-    print(f"[DEBUG:generate_caption] adapter_images tensor: {adapter_images is not None}, shape={tuple(adapter_images.shape) if torch.is_tensor(adapter_images) else 'N/A'}")
 
     inputs = _prepare_generate_inputs(model, inputs)
     _validate_generate_inputs(model, inputs)
-    print(f"[DEBUG:generate_caption] inputs keys after _prepare_generate_inputs: {sorted(inputs.keys())}")
-    if "input_ids" in inputs and torch.is_tensor(inputs["input_ids"]):
-        iids2 = inputs["input_ids"]
-        n_img2 = int((iids2 == -200).sum().item())
-        print(f"[DEBUG:generate_caption] after prepare: input_ids shape={tuple(iids2.shape)}, -200 count={n_img2}")
 
     # For official LLaVA-Med: restore 'images' key alongside 'pixel_values' so
     # build_tf_inputs / saliency forward passes can use the correct key.
     if getattr(processor, "_is_llava_med_adapter", False) and adapter_images is not None:
         inputs["images"] = adapter_images
-        print(f"[DEBUG:generate_caption] restored 'images' key in inputs for saliency")
 
     pad_id = tok.pad_token_id
     eos_id = tok.eos_token_id
@@ -689,18 +670,12 @@ def generate_caption(
     # Normalize to the expected full sequence format [prompt ... gen] so
     # teacher-forcing keeps image-conditioning tokens in place.
     prompt_ids = inputs["input_ids"]
-    print(f"[DEBUG:generate_caption] raw gen_ids shape={tuple(gen_ids.shape)}, prompt input_len={input_len}")
-    print(f"[DEBUG:generate_caption] raw gen_ids[0][:30]={gen_ids[0, :30].tolist()}")
     has_full_prefix = (
         gen_ids.shape[1] >= input_len
         and torch.equal(gen_ids[:, :input_len], prompt_ids)
     )
-    print(f"[DEBUG:generate_caption] has_full_prefix={has_full_prefix}")
     if not has_full_prefix:
         gen_ids = torch.cat([prompt_ids, gen_ids], dim=1)
-        print(f"[DEBUG:generate_caption] concatenated prompt+gen → shape={tuple(gen_ids.shape)}")
-    n_img_in_gen = int((gen_ids == -200).sum().item())
-    print(f"[DEBUG:generate_caption] final gen_ids shape={tuple(gen_ids.shape)}, -200 count={n_img_in_gen}, values[:30]={gen_ids[0, :30].tolist()}")
 
     # Truncate at the first non-content token after the prompt.
     new_tokens = gen_ids[0, input_len:]
@@ -753,8 +728,6 @@ def generate_caption(
 
         retry_new = retry_ids[0, input_len:]
         retry_text = tok.decode(retry_new.tolist(), skip_special_tokens=True).strip()
-        print(f"[DEBUG:generate_caption] retry_ids shape={tuple(retry_ids.shape)}, -200 count={int((retry_ids==-200).sum().item())}")
-        print(f"[DEBUG:generate_caption] retry_new len={len(retry_new)}, text='{retry_text[:80]}'")
         if len(retry_new) > len(new_tokens) and retry_text:
             gen_ids = retry_ids
             new_tokens = retry_new
@@ -768,14 +741,10 @@ def generate_caption(
         prompt_ids_with_img = inputs["input_ids"]  # always has -200 from prepare_inputs
         gen_has_img = bool((gen_ids[0] == -200).any().item())
         prompt_has_img = bool((prompt_ids_with_img[0] == -200).any().item())
-        print(f"[DEBUG:generate_caption] pre-return: gen_has_img={gen_has_img}, prompt_has_img={prompt_has_img}")
         if prompt_has_img and not gen_has_img:
             gen_toks = gen_ids[0, input_len:].unsqueeze(0)  # [1, num_generated]
             gen_ids = torch.cat([prompt_ids_with_img, gen_toks], dim=1)
-            print(f"[DEBUG:generate_caption] RECONSTRUCTED gen_ids with -200: shape={tuple(gen_ids.shape)}, -200 count={int((gen_ids==-200).sum().item())}")
-            print(f"[DEBUG:generate_caption] gen_ids[0,:25]={gen_ids[0,:25].tolist()}")
 
-    print(f"[DEBUG:generate_caption] FINAL gen_ids shape={tuple(gen_ids.shape)}, -200 count={int((gen_ids==-200).sum().item())}")
     return gen_ids, text, input_len, inputs
 
 
@@ -868,9 +837,6 @@ def get_image_token_positions(inputs: dict, image_token_index: int = 32000) -> t
     """
     iids = inputs["input_ids"][0]
     positions = (iids == image_token_index).nonzero(as_tuple=False).flatten()
-    print(f"[DEBUG:get_image_token_positions] image_token_index={image_token_index}, input_ids shape={tuple(iids.shape)}")
-    print(f"[DEBUG:get_image_token_positions] found {len(positions)} placeholder positions: {positions.tolist()[:20]}")
-    print(f"[DEBUG:get_image_token_positions] input_ids[:30]={iids[:30].tolist()}")
 
     # Fallback: if nothing found with the given index, try the official LLaVA-Med
     # placeholder (-200).  This handles the common case where cfg.image_token_index
@@ -878,7 +844,6 @@ def get_image_token_positions(inputs: dict, image_token_index: int = 32000) -> t
     if len(positions) == 0 and image_token_index != -200:
         fallback_pos = (iids == -200).nonzero(as_tuple=False).flatten()
         if len(fallback_pos) > 0:
-            print(f"[DEBUG:get_image_token_positions] FALLBACK to -200: found {len(fallback_pos)} positions at {fallback_pos.tolist()}")
             positions = fallback_pos
             image_token_index = -200
 
@@ -900,12 +865,10 @@ def get_image_token_positions(inputs: dict, image_token_index: int = 32000) -> t
                         start = int(positions[0].item())
                         device = positions.device
                         expanded = torch.arange(start, start + n_img, device=device)
-                        print(f"[DEBUG:get_image_token_positions] single placeholder → exact range [{start}, {start+n_img}) = {n_img} patches (no CLS)")
                         return expanded
-        except Exception as ex:
-            print(f"[DEBUG:get_image_token_positions] expansion failed: {ex}")
+        except Exception:
+            pass
 
-    print(f"[DEBUG:get_image_token_positions] returning {len(positions)} raw positions")
     return positions
 
 
