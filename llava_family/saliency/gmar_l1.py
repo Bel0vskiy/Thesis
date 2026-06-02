@@ -1,4 +1,11 @@
-"""GMAR-L1 saliency wrapper."""
+"""
+GMAR-L1 saliency for LLaVA models.
+
+Thin wrapper around :func:`gmar_shared.compute_gmar_variant` that selects
+the L1-norm head-weighting variant.  Head weights are proportional to the
+L1 norm of the gradient of the target token logit w.r.t. each attention
+head's weight matrix, then zero-floored and L1-normalised before rollout.
+"""
 
 from __future__ import annotations
 

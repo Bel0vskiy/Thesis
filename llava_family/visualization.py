@@ -1,5 +1,9 @@
 """
 Visualization utilities for saliency maps and perturbation results.
+
+Provides functions to produce overlay heatmaps, per-token saliency grids,
+multi-method comparison figures, and perturbation curve plots.  All figure
+output is written to disk (non-interactive backend).
 """
 
 from __future__ import annotations

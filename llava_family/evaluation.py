@@ -1,19 +1,25 @@
 """
 Perturbation-based faithfulness evaluation.
 
-For every generated token the corresponding saliency heatmap is used to
-identify the most influential image regions.  Those regions are zeroed
-out, the modified image is passed through the model again (teacher-
-forcing), and the drop in the target token's probability is measured.
+For each generated token, the corresponding saliency heatmap is used to
+identify the most influential image regions.  Those regions are zeroed out,
+the modified image is passed through the model under teacher forcing, and the
+probability drop for the target token is measured.
 
-Two modes are supported:
+Three evaluation modes are provided:
 
-* **per-token** (``mode="per_token"``):  each token gets its own masked
-  image ⟹ one forward pass per token × mask-ratio.  Faithful to the
-  thesis description but slow.
-* **average** (``mode="average"``):  a single mask derived from the
-  mean saliency across all tokens ⟹ one forward pass per mask-ratio.
+* **per-token** (``evaluate_faithfulness_per_token``): each token gets its
+  own masked image — one forward pass per token per mask ratio.  Produces
+  token-level drop curves.
+* **average** (``evaluate_faithfulness_average``): a single mask derived from
+  the mean saliency across all tokens — one forward pass per mask ratio.
   Fast approximation for quick iterations.
+* **random** (``evaluate_faithfulness_random``): perturbation with a
+  uniformly random saliency map.  Serves as a sanity baseline.
+
+All three modes return a dict with keys ``per_token``, ``aopc``, and
+``mean_drops_by_ratio``.  AOPC is the mean probability drop averaged over
+all configured mask ratios.
 """
 
 from __future__ import annotations

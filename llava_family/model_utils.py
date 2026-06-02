@@ -1,6 +1,28 @@
 """
 Model loading, inference helpers, and shared tensor-building utilities
 for LLaVA / LLaVA-Med vision-language models.
+
+Public API
+----------
+load_model_and_processor(cfg)
+    Load a model and processor/tokenizer from the configured checkpoint.
+    For LLaVA-Med checkpoints, uses the official Microsoft ``llava`` package
+    loader when available; falls back to the Hugging Face
+    ``LlavaForConditionalGeneration`` path otherwise.
+
+prepare_inputs(processor, image, prompt_text, model)
+    Build the raw input dict from an image and a prompt string.
+
+generate_caption(model, processor, image, cfg)
+    Generate a caption and return the full token sequence, decoded text,
+    prompt length, and the original inputs dict.
+
+get_token_probabilities(model, tf_inputs, generated_ids, input_len)
+    Teacher-forcing forward pass; returns per-generated-token probabilities.
+
+build_tf_inputs(inputs, generated_ids, input_len, pixel_values_override)
+    Construct the input dict for a teacher-forcing pass, optionally
+    substituting a masked image tensor.
 """
 
 from __future__ import annotations
@@ -67,8 +89,7 @@ def load_model_and_processor(cfg: Config):
             if "device-side assert" in msg.lower() or "cuda error" in msg.lower():
                 raise RuntimeError(
                     "Official LLaVA-Med loader hit a CUDA device-side assert. "
-                    "Restart the Colab runtime, then rerun cells from Cell 2 and "
-                    "load the model again. Do not continue in this kernel. "
+                    "Restart the runtime and reload the model from scratch. "
                     f"Original error: {e}"
                 )
 
@@ -94,9 +115,10 @@ def load_model_and_processor(cfg: Config):
     else:
         kwargs["torch_dtype"] = torch.float16
 
-        # In some Colab states, bitsandbytes may be partially removed (module
-        # discoverable but no package metadata), which makes HF internals raise
-        # PackageNotFoundError even for non-quantized loading.
+        # In some environments, bitsandbytes may be discoverable as a module
+        # but missing package metadata, which causes HF internals to raise
+        # PackageNotFoundError even for non-quantized loading.  Patch the
+        # availability flags to avoid a spurious failure.
         try:
             import importlib.metadata as _ilm
             import transformers.modeling_utils as _mu
@@ -108,9 +130,9 @@ def load_model_and_processor(cfg: Config):
                 _mu.is_bitsandbytes_available = lambda: False
                 _iu.is_bitsandbytes_available = lambda: False
         except Exception:
-            # Best-effort hardening: if this patch path fails, regular loading
-            # path below will still run and surface a clear traceback.
-            pass
+                # Best-effort patch; if it fails, the main load path will
+                # surface a clear traceback.
+                pass
 
     # Compatibility path: this works across more runtime combinations
     # (including environments where llava_mistral is not auto-registered).
@@ -178,10 +200,12 @@ def _candidate_vision_towers(model) -> list[str]:
 
 
 def prepare_inputs(processor, image: Image.Image, prompt_text: str, model=None):
-    """Build the raw input dict.
+    """Build the raw input dict for a model forward pass.
 
-    Tries the HF chat-template API first; falls back to the manual
-    Vicuna-style prompt format used by many LLaVA checkpoints.
+    Tries the HF chat-template API first, then falls back to the manual
+    Vicuna-style prompt format used by many LLaVA checkpoints.  Also handles
+    processors that return text-only outputs by fetching image tensors from
+    the image processor directly.
 
     Returns ``(inputs_dict, prompt_string)``.
     """
@@ -257,7 +281,7 @@ def prepare_inputs(processor, image: Image.Image, prompt_text: str, model=None):
                     _ = get_vision_input_key(cand)
                     break
                 except Exception:
-                    # Keep trying; we might still find a variant that includes vision tensors.
+                    # Keep trying; a later variant may include the vision tensor.
                     pass
         except Exception:
             pass
@@ -319,19 +343,18 @@ def move_inputs_to_device(model, inputs: dict) -> dict:
         if "device-side assert" in msg or "cuda error" in msg:
             raise RuntimeError(
                 "CUDA context is in an error state (device-side assert). "
-                "Restart the Colab runtime, then rerun from Cell 2. "
-                "Do not continue in the current kernel. "
+                "Restart the runtime and reload the model from scratch. "
                 f"Original error: {e}"
             )
         raise
 
 
 def get_vision_input_key(inputs: dict) -> str:
-    """Return the key used for image tensors in processor/model inputs.
+    """Return the key used for image tensors in *inputs*.
 
-    Different LLaVA-family checkpoints may expose image tensors under
-    different keys. We support the common variants and fail with a clear
-    error if none is present.
+    Different LLaVA-family checkpoints expose image tensors under different
+    keys. Raises ``KeyError`` with a descriptive message if no recognised
+    vision key is present.
     """
     for key in (
         "pixel_values",
@@ -355,13 +378,11 @@ def get_vision_tensor(inputs: dict) -> torch.Tensor:
 
 
 def _prepare_generate_inputs(model, inputs: dict) -> dict:
-    """Normalize multimodal inputs for generation.
+    """Normalise multimodal inputs before generation.
 
-    Ensures:
-    - vision tensor is passed as ``pixel_values``
-    - no conflicting vision aliases remain
-    - batch dimension exists on pixel_values
-    - at least one image token is present in input_ids
+    Ensures the vision tensor is keyed as ``pixel_values``, removes
+    conflicting aliases, adds a batch dimension if missing, and injects
+    an image-token placeholder into ``input_ids`` when none is present.
     """
     out = dict(inputs)
 
@@ -465,7 +486,12 @@ def _prepare_generate_inputs(model, inputs: dict) -> dict:
 
 
 def _validate_generate_inputs(model, inputs: dict) -> None:
-    """Fail fast on invalid multimodal inputs before CUDA kernels run."""
+    """Raise a descriptive error if multimodal inputs are invalid.
+
+    Checks that ``input_ids`` and ``pixel_values`` are present and that all
+    token IDs are within the model vocabulary.  The LLaVA-family negative
+    placeholder (commonly -200) is explicitly allowed.
+    """
     if "input_ids" not in inputs or not torch.is_tensor(inputs["input_ids"]):
         raise RuntimeError("Missing tensor input_ids before generation.")
 
@@ -518,10 +544,10 @@ def build_tf_inputs(
 ) -> dict:
     """Construct a teacher-forcing input dict.
 
-    ``generated_ids`` is the *full* sequence ``[prompt … generated]``.
-    ``inputs`` must contain ``pixel_values`` from the original call to
-    :func:`prepare_inputs`.
-    ``pixel_values_override`` lets the caller substitute a masked image.
+    ``generated_ids`` is the full sequence ``[prompt … generated]``.
+    ``inputs`` must contain the vision tensor from the original
+    :func:`prepare_inputs` call.  Pass ``pixel_values_override`` to
+    substitute a masked image for perturbation-based evaluation.
     """
     total_len = generated_ids.shape[1]
     device = generated_ids.device
@@ -560,12 +586,12 @@ def generate_caption(
 ):
     """Generate a caption for *image*.
 
-    Returns ``(generated_ids, generated_text, input_len, inputs)``.
+    Returns a four-tuple ``(generated_ids, generated_text, input_len, inputs)``:
 
-    * ``generated_ids``  – ``[1, total_len]`` including the prompt.
-    * ``generated_text`` – decoded string of the *new* tokens only.
+    * ``generated_ids``  – ``[1, total_len]`` tensor including the prompt.
+    * ``generated_text`` – decoded string of the generated tokens only.
     * ``input_len``      – number of prompt tokens.
-    * ``inputs``         – the original processor output (on device).
+    * ``inputs``         – the original processor output, moved to device.
     """
     inputs, _ = prepare_inputs(processor, image, cfg.prompt, model=model)
     inputs = move_inputs_to_device(model, inputs)
@@ -763,9 +789,9 @@ def get_token_probabilities(
     generated_ids: torch.Tensor,
     input_len: int,
 ) -> torch.Tensor:
-    """Return a 1-D float tensor of per-generated-token probabilities.
+    """Return per-generated-token probabilities via a teacher-forcing pass.
 
-    Shape ``[num_generated_tokens]``.
+    Shape of the returned tensor: ``[num_generated_tokens]``.
     """
     call_kwargs = dict(tf_inputs)
 

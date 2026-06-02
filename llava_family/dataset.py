@@ -1,5 +1,16 @@
 """
-Dataset loading utilities.
+Dataset loading for the LLaVA-family evaluation pipeline.
+
+The public entry point is :func:`load_dataset_samples`, which returns a list
+of ``{"image": PIL.Image, "caption": str, "id": str}`` dicts.  Two backends
+are supported:
+
+- **Hugging Face hub** (default) – streaming load via the ``datasets``
+  library.  Column names are resolved automatically when they differ from the
+  configured defaults.
+- **Local directory** – reads images directly from the file system.  If a
+  ``captions.csv`` file is present in the directory, captions and filenames
+  are read from it; otherwise all image files are loaded in sorted order.
 """
 from __future__ import annotations
 

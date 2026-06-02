@@ -1,10 +1,10 @@
 """
-Shared GMAR computation for LLaVA-Med.
+Shared GMAR computation for LLaVA-family models.
 
-Computes GMAR-L1 and GMAR-L2 saliency maps in one heavy pass
-(single forward + per-token backward loop), and caches the latest
-sample result so requesting gmar_l1 then gmar_l2 does not duplicate
-work.
+Computes GMAR-L1 and GMAR-L2 saliency maps in a single pass
+(one forward pass followed by a per-token backward loop) and caches the
+result for the current sample so that requesting gmar_l1 and gmar_l2
+back-to-back does not repeat the expensive computation.
 """
 
 from __future__ import annotations
