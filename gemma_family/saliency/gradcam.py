@@ -29,18 +29,24 @@ from . import register
 # output.
 # ─────────────────────────────────────────────────────────────────────────
 class _ProjectorHook:
+    """Forward hook that captures the multi-modal projector output.
+
+    The hook detaches the output from the model's computation graph and
+    re-attaches it as a differentiable leaf (``requires_grad=True``), so
+    that ``torch.autograd.grad`` can differentiate through it without
+    back-propagating into the vision encoder.
+    """
+
     def __init__(self):
         self.activation: torch.Tensor | None = None
         self._handle = None
 
     # --- hook callback ---------------------------------------------------
     def __call__(self, module, inp, out):
-        # out: [B, 256, text_hidden_size]
         out = out.detach().requires_grad_(True)
-        # retain_grad so we can read .grad after backward
         out.retain_grad()
         self.activation = out
-        return out                      # replaced in the graph
+        return out                   
 
     # --- lifecycle -------------------------------------------------------
     def register(self, module):

@@ -2,21 +2,6 @@
 """
 Main pipeline for: *Evaluating Explainability Methods for Medical
 Vision-Language Models via Perturbation-Based Faithfulness Testing*.
-
-Usage examples
---------------
-# Quick smoke test (2 samples, attention only, average perturbation):
-  python run.py --num-samples 2 --methods attention --eval-mode average
-
-# Full experiment (50 samples, both methods, per-token perturbation):
-  python run.py --num-samples 50 --methods attention gradcam \
-                --eval-mode per_token
-
-# Using a local image folder instead of HuggingFace dataset:
-  python run.py --dataset ./my_images --num-samples 10
-
-# Disable 4-bit quantisation (needs ≥ 16 GB VRAM):
-  python run.py --no-4bit --num-samples 10
 """
 
 from __future__ import annotations

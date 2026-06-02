@@ -13,7 +13,7 @@ class Config:
     attn_implementation: str = "eager"
 
     dataset_name: str = "eltorio/ROCOv2-radiology"
-    dataset_config: str = ""           # HuggingFace subset/config name (e.g. '2017_captions' for COCO)
+    dataset_config: str = ""          
     dataset_split: str = "train"
     image_column: str = "image"        
     caption_column: str = "caption"    
@@ -31,8 +31,8 @@ class Config:
     save_visualizations: bool = True
 
     #Architecture constants
-    image_token_grid: int = 16          # 16×16 tokens after projector pooling
-    vision_patches_per_side: int = 64   # 64×64 patches before pooling
+    image_token_grid: int = 16          
+    vision_patches_per_side: int = 64 
     global_attn_layers: List[int] = field(
         default_factory=lambda: [5, 11, 17, 23, 29]
     )

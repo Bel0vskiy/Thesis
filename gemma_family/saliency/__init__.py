@@ -40,6 +40,25 @@ def _load_modules(force_reload: bool = False) -> None:
 
 
 def get_saliency_fn(name: str) -> Callable:
+    """Look up a registered saliency function by name.
+
+    Parameters
+    ----------
+    name : str
+        One of ``'attention'``, ``'gradcam'``, ``'gmar_l1'``, ``'gmar_l2'``.
+
+    Returns
+    -------
+    Callable
+        A function with signature
+        ``(model, tf_inputs, generated_ids, input_len,
+          image_token_positions, cfg) -> dict[int, np.ndarray]``.
+
+    Raises
+    ------
+    KeyError
+        If *name* is not in the registry after a forced reload.
+    """
     # Ensure registrations exist in the current module instance.
     # This is notebook-safe when users reload the parent package.
     if not _REGISTRY:

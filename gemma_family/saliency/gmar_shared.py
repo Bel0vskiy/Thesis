@@ -27,6 +27,12 @@ def _cache_key(
     image_token_positions: torch.Tensor,
     cfg: Config,
 ) -> tuple:
+    """Build a hashable key that uniquely identifies a GMAR computation.
+
+    Uses object identities for the heavy tensors (model, inputs, ids) and
+    value-based hashing for scalars/lists, so the cache is invalidated
+    whenever a new sample is processed.
+    """
     return (
         id(model),
         id(tf_inputs),
@@ -40,6 +46,16 @@ def _cache_key(
 
 
 def _select_layers(cfg: Config, num_layers: int) -> list[int]:
+    """Return the list of layer indices to use for rollout.
+
+    Respects ``cfg.attention_layer_strategy``:
+
+    * ``'global'``  — use ``cfg.global_attn_layers`` (Gemma-3 global layers).
+    * ``'all'``     — every layer in the model.
+    * ``'lastN'``   — the last *N* global layers (e.g. ``'last3'``).
+
+    Falls back to all layers if the selection is empty.
+    """
     if cfg.attention_layer_strategy == "global":
         layer_ids = [i for i in cfg.global_attn_layers if i < num_layers]
     elif cfg.attention_layer_strategy == "all":
@@ -57,6 +73,11 @@ def _select_layers(cfg: Config, num_layers: int) -> list[int]:
 
 
 def _normalize_head_weights(weights: torch.Tensor, num_heads: int) -> torch.Tensor:
+    """L1-normalise per-head importance scores, clamping negatives to zero.
+
+    If the total is near zero (all heads equally uninformative), returns a
+    uniform distribution over *num_heads* heads.
+    """
     weights = weights.clamp(min=0)
     total = weights.sum()
     if total > 1e-9:
@@ -69,6 +90,23 @@ def _attention_rollout(
     head_weights: list[torch.Tensor],
     layer_ids: list[int],
 ) -> torch.Tensor:
+    """Gradient-weighted attention rollout over selected layers.
+
+    Parameters
+    ----------
+    attentions : list of [1, H, S, S]
+        Per-layer attention tensors (detached).
+    head_weights : list of [H]
+        Per-layer, per-head importance weights (L1-normalised).
+    layer_ids : list of int
+        Layers to include in the rollout product.
+
+    Returns
+    -------
+    torch.Tensor of shape [S, S]
+        Accumulated rollout matrix; entry ``[i, j]`` approximates the
+        total effective attention from token *i* to token *j*.
+    """
     seq_len = attentions[0].shape[-1]
     device = attentions[0].device
     rollout = torch.eye(seq_len, device=device, dtype=torch.float32)
@@ -85,11 +123,15 @@ def _attention_rollout(
 
 
 def _postprocess(raw_maps: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
+    """Clip, zero out the attention-sink position, and percentile-normalise.
+
+    Negative values are clipped to zero.  The known attention-sink at
+    ``[12, 0]`` is suppressed.  Maps are then scaled to ``[0, 1]`` using
+    the 99th-percentile as the upper bound to prevent outlier saturation.
+    """
     out: dict[int, np.ndarray] = {}
     for pos, raw in raw_maps.items():
-        # Keep raw token saliency (no cross-token baseline subtraction).
         sal = np.clip(raw.copy(), 0.0, None)
-        # Match attention-rollout sink suppression for MedGemma.
         sal[12, 0] = 0.0
 
         lo = sal.min()
@@ -114,6 +156,18 @@ def _compute_pair(
     image_token_positions: torch.Tensor,
     cfg: Config,
 ) -> dict[str, dict[int, np.ndarray]]:
+    """Run the joint GMAR-L1 / GMAR-L2 forward+backward computation.
+
+    Executes a single teacher-forcing forward pass with
+    ``output_attentions=True``, then for each generated token performs one
+    backward pass to obtain per-head gradient weights.  Both L1 and L2
+    rollouts are built from the same set of gradients.
+
+    Returns
+    -------
+    dict with keys ``'gmar_l1'`` and ``'gmar_l2'``, each mapping
+    ``{abs_position: grid×grid float32 saliency map}``.
+    """
     total_len = generated_ids.shape[1]
     grid = cfg.image_token_grid
 
@@ -182,6 +236,20 @@ def compute_gmar_variant(
     cfg: Config,
     variant: str,
 ) -> dict[int, np.ndarray]:
+    """Return saliency maps for one GMAR variant, using the shared cache.
+
+    Parameters
+    ----------
+    variant : ``'gmar_l1'`` or ``'gmar_l2'``
+        Selects the head-weighting norm.  If both variants are requested
+        for the same sample (as is typical), the second call is served
+        from cache without re-running the forward/backward passes.
+
+    Returns
+    -------
+    dict[int, np.ndarray]
+        ``{abs_position: grid×grid float32 saliency map}``.
+    """
     if variant not in {"gmar_l1", "gmar_l2"}:
         raise ValueError(f"Unknown GMAR variant: {variant}")
 

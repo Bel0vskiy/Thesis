@@ -134,7 +134,6 @@ def compute_attention_saliency(
             hi = sal.max()
             if hi - lo > 1e-9:
                 sal = (sal - lo) / (hi - lo)
-            # else: leave as-is (all values essentially equal)
 
         saliency_maps[pos] = sal.astype(np.float32)
 
