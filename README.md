@@ -10,8 +10,6 @@ The paper produced from this code is the `thesis.pdf` file at the root of this r
 
 You need an NVIDIA GPU with at least 48 GB of VRAM, a good amount of free disk space for the model weights, and a solid internet connection to pull them from the Hugging Face hub. For the best experience I recommend running on an H100 or RTX 6000. You will also need a Hugging Face account with an API token.
 
-All dependencies for each model family are listed in the respective `requirements.txt` files inside `gemma_family/` and `llava_family/`. For Colab runs the install cells in each notebook handle everything.
-
 ## Navigating The Codebase
 
 The two directories at the root of the repository contain the adaptations and experiment notebooks for two separate model families: **Gemma** (`google/medgemma-1.5-4b-it`, `google/gemma-3-4b-it`) and **LLaVA** (`llava-hf/llava-1.5-7b-hf`, `microsoft/llava-med-v1.5-mistral-7b`). Both families are evaluated on ROCOv2-radiology (medical domain) and COCO-Caption (general domain).
