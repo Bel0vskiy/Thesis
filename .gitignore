@@ -1,6 +1,8 @@
 .tmp.driveupload
 .tmp.drivedownload
-.pycache
+__pycache__/
+*.pyc
+*.pyo
 /llava_med_llava1.5/results
 /llava_med_llava1.5/results*/
 /llava_med_llava1.5/results_cache
