@@ -12,7 +12,9 @@ You need an NVIDIA GPU with at least 48 GB of VRAM, a good amount of free disk s
 
 ## Navigating The Codebase
 
-The two directories at the root of the repository contain the adaptations and experiment notebooks for two separate model families: **Gemma** (`google/medgemma-1.5-4b-it`, `google/gemma-3-4b-it`) and **LLaVA** (`llava-hf/llava-1.5-7b-hf`, `microsoft/llava-med-v1.5-mistral-7b`). Both families are evaluated on ROCOv2-radiology (medical domain) and COCO-Caption (general domain).
+The directories at the root of the repository contain the adaptations and experiment notebooks for two separate model families: **Gemma** (`google/medgemma-1.5-4b-it`, `google/gemma-3-4b-it`) and **LLaVA** (`llava-hf/llava-1.5-7b-hf`, `microsoft/llava-med-v1.5-mistral-7b`). Both families are evaluated on ROCOv2-radiology (medical domain) and COCO-Caption (general domain).
+
+The word level analysis directory contains highly abstracted notebooks that run the scripts that I used to merge tokens into words in the thesis, as well as the same statistical and data analysis. This directory also contains my results.
 
 Below is a breakdown of the lovely files you will find in each directory.
 
